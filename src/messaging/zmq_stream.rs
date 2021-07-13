@@ -169,16 +169,16 @@ impl InboundRouter {
             expected_replies: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-    fn route(&mut self, message_result: MessageResult) {
+    fn route(
+        &mut self,
+        message_result: MessageResult,
+    ) -> Result<(), std::sync::mpsc::SendError<Result<Message, ReceiveError>>> {
         match message_result {
             Ok(message) => {
                 let mut expected_replies = self.expected_replies.lock().unwrap();
                 match expected_replies.remove(message.get_correlation_id()) {
-                    Some(sender) => sender.send(Ok(message)).expect("Unable to route reply"),
-                    None => self
-                        .inbound_tx
-                        .send(Ok(message))
-                        .expect("Unable to route new message"),
+                    Some(sender) => Ok(sender.send(Ok(message))?),
+                    None => Ok(self.inbound_tx.send(Ok(message))?),
                 }
             }
             Err(ReceiveError::DisconnectedError) => {
@@ -191,8 +191,13 @@ impl InboundRouter {
                 self.inbound_tx
                     .send(Err(ReceiveError::DisconnectedError))
                     .unwrap_or_else(|err| error!("Failed to send disconnect: {}", err));
+
+                Ok(())
             }
-            Err(err) => error!("Error: {}", err),
+            Err(err) => {
+                error!("Error: {}", err);
+                Ok(())
+            }
         }
     }
 

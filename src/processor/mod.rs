@@ -58,16 +58,11 @@ fn generate_correlation_id() -> String {
     rand::thread_rng().gen_ascii_chars().take(LENGTH).collect()
 }
 
-pub struct TransactionProcessor<'a> {
-    endpoint: String,
-    conn: ZmqMessageConnection,
-    handlers: Vec<&'a dyn TransactionHandler>,
-}
-
 pub struct EmptyTransactionContext {
     context: Box<dyn TransactionContext + Send + Sync>,
     _sender: ZmqMessageSender,
     _receiver: std::sync::Mutex<MessageReceiver>,
+    stopping: AtomicBool,
 }
 
 impl EmptyTransactionContext {
@@ -81,6 +76,7 @@ impl EmptyTransactionContext {
             )),
             _receiver: std::sync::Mutex::new(_receiver),
             _sender,
+            stopping: AtomicBool::new(false),
         }
     }
     pub fn flush(&self) {
@@ -128,7 +124,15 @@ impl TransactionContext for EmptyTransactionContext {
     }
 
     fn get_sig_by_num(&self, block_num: u64) -> Result<String, handler::ContextError> {
+        // match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         self.context.get_sig_by_num(block_num)
+        // })) {
+        //     Ok(result) => result,
+        //     Err(err) => {
+        //         error!("An error occurred in the empty context: {}", err);
+
+        //     }
+        // }
     }
 
     fn get_reward_block_signatures(
@@ -149,6 +153,13 @@ impl TransactionContext for EmptyTransactionContext {
     }
 }
 
+pub struct TransactionProcessor<'a> {
+    endpoint: String,
+    conn: ZmqMessageConnection,
+    handlers: Vec<&'a dyn TransactionHandler>,
+    empty_contexts: Vec<Arc<EmptyTransactionContext>>,
+}
+
 impl<'a> TransactionProcessor<'a> {
     /// TransactionProcessor is for communicating with a
     /// validator and routing transaction processing requests to a registered
@@ -158,6 +169,7 @@ impl<'a> TransactionProcessor<'a> {
             endpoint: String::from(endpoint),
             conn: ZmqMessageConnection::new(endpoint),
             handlers: Vec::new(),
+            empty_contexts: Vec::new(),
         }
     }
 
@@ -170,8 +182,11 @@ impl<'a> TransactionProcessor<'a> {
         self.handlers.push(handler);
     }
 
-    pub fn empty_context(&self, timeout: Option<Duration>) -> EmptyTransactionContext {
-        EmptyTransactionContext::new(&self.conn, timeout)
+    pub fn empty_context(&mut self, timeout: Option<Duration>) -> Arc<EmptyTransactionContext> {
+        let context = Arc::new(EmptyTransactionContext::new(&self.conn, timeout));
+        let context_cp = Arc::clone(&context);
+        self.empty_contexts.push(context);
+        context_cp
     }
 
     fn register(&mut self, sender: &ZmqMessageSender, unregister: &Arc<AtomicBool>) -> bool {
